@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Facial Performance Dashboard</title>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+<style>
+body { font-family: Arial; background:#f4f6f9; margin:20px; }
+h2 { margin-bottom:10px; }
+input, select, button { padding:8px; margin:5px; width:260px; }
+
+.kpi-container { display:grid; grid-template-columns: repeat(4,1fr); gap:15px; margin-top:20px; }
+.kpi { padding:20px; border-radius:10px; text-align:center; font-size:18px; font-weight:bold; color:black; }
+.white { background:#ffffff; color:black; }
+
+.table-box { margin-top:30px; background:white; padding:20px; border-radius:10px; }
+table { border-collapse:collapse; width:100%; }
+th, td { border:1px solid #ddd; padding:8px; text-align:center; color:black; }
+th { background:#3498db; color:white; }
+
+.avg-darkgreen { background:#145a32; color:white; }
+.avg-lightred { background:#f1948a; color:black; }
+.avg-red { background:#e74c3c; color:white; }
+
+.fail-red { color:#e74c3c; font-weight:bold; }
+.fail-black { color:#000000; font-weight:bold; }
+.pass-green { color:#145a32; font-weight:bold; }
+
+#cityChart { margin-top:40px; height:400px; }
+#partnerSummary { margin-top:15px; font-weight:bold; background:#f9f9f9; padding:15px; border-radius:8px; }
+</style>
+</head>
+
+<body>
+
+<h2>📊 Facial Performance Dashboard</h2>
+
+<input type="file" id="upload" accept=".xlsx,.xls"><br>
+
+<select id="citySelect"><option value="">All Cities</option></select>
+<select id="partnerSelect"><option value="">All Partners</option></select><br>
+
+<button id="exportOverall">Export Overall Data</button>
+<button id="exportPartner">Export Selected Partner Data</button>
+
+<!-- KPI -->
+<div class="kpi-container">
+  <div class="kpi" id="failBox">Fail<br><span id="failVal">0</span></div>
+  <div class="kpi" id="passBox">Pass<br><span id="passVal">0</span></div>
+  <div class="kpi white">Total Couriers<br><span id="totalVal">0</span></div>
+  <div class="kpi" id="crBox">Compliance Rate<br><span id="crVal">0%</span></div>
+</div>
+
+<!-- TABLE -->
+<div class="table-box">
+<h3>🏆 City-wise Partner Summary & Ranking</h3>
+<table>
+<thead>
+<tr>
+<th>Rank</th>
+<th>Partner Name</th>
+<th>Fail</th>
+<th>Pass</th>
+<th>Total</th>
+<th>Avg %</th>
+</tr>
+</thead>
+<tbody id="summaryTable"></tbody>
+</table>
+</div>
+
+<!-- CHART -->
+<div id="cityChart"></div>
+
+<!-- Partner Summary -->
+<div class="table-box">
+<h3>📋 Partner Performance Summary</h3>
+<select id="summaryPartnerSelect"><option value="">Select Partner</option></select>
+<div id="partnerSummary"></div>
+</div>
+
+<script>
+const upload = document.getElementById("upload");
+const citySelect = document.getElementById("citySelect");
+const partnerSelect = document.getElementById("partnerSelect");
+const failVal = document.getElementById("failVal");
+const passVal = document.getElementById("passVal");
+const totalVal = document.getElementById("totalVal");
+const crVal = document.getElementById("crVal");
+const summaryTable = document.getElementById("summaryTable");
+const crBox = document.getElementById("crBox");
+const failBox = document.getElementById("failBox");
+const passBox = document.getElementById("passBox");
+const exportOverall = document.getElementById("exportOverall");
+const exportPartner = document.getElementById("exportPartner");
+
+const summaryPartnerSelect = document.getElementById("summaryPartnerSelect");
+const partnerSummary = document.getElementById("partnerSummary");
+
+let rawData = [];
+
+const num = v => (v===undefined||v===null||v==="")?0:Number(v)||0;
+const pct = v => (num(v)<=1?num(v)*100:num(v));
+
+/* ===== UPLOAD ===== */
+upload.addEventListener("change", e=>{
+  const reader=new FileReader();
+  reader.onload = evt=>{
+    const wb=XLSX.read(evt.target.result,{type:"binary"});
+    rawData=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    populateFilters();
+    renderDashboard();
+    populateSummaryPartnerSelect();
+    updatePartnerSummary();
+  };
+  reader.readAsBinaryString(e.target.files[0]);
+});
+
+citySelect.addEventListener("change", ()=>{ renderDashboard(); updatePartnerSummary(); });
+partnerSelect.addEventListener("change", renderDashboard);
+
+/* ===== FILTERS ===== */
+function populateFilters(){
+  citySelect.innerHTML=`<option value="">All Cities</option>`;
+  [...new Set(rawData.map(r=>r.city))].forEach(c=>citySelect.innerHTML+=`<option>${c}</option>`);
+  partnerSelect.innerHTML=`<option value="">All Partners</option>`;
+  [...new Map(rawData.map(r=>[r.partner_id,r.partner_name]))].forEach(([id,name])=>partnerSelect.innerHTML+=`<option value="${id}">${name}</option>`);
+}
+
+function populateSummaryPartnerSelect(){
+  summaryPartnerSelect.innerHTML = `<option value="">Select Partner</option>`;
+  [...new Map(rawData.map(r=>[r.partner_id,r.partner_name]))].forEach(([id,name])=>{
+    summaryPartnerSelect.innerHTML += `<option value="${id}">${name}</option>`;
+  });
+}
+
+/* ===== DASHBOARD ===== */
+function renderDashboard(){
+  let data = rawData;
+  if(citySelect.value) data = data.filter(d=>d.city===citySelect.value);
+  if(partnerSelect.value) data = data.filter(d=>d.partner_id==partnerSelect.value);
+
+  let fail=0, pass=0, total=0, crSum=0, cnt=0;
+  data.forEach(d=>{
+    fail+=num(d.Fail); 
+    pass+=num(d.Pass); 
+    total+=num(d.Total); 
+    crSum+=pct(d["Facial Recognition Pass Couriers Prop."]);
+    cnt++;
+  });
+
+  failVal.textContent=fail;
+  passVal.textContent=pass;
+  totalVal.textContent=total;
+  const cr=cnt?crSum/cnt:0;
+  crVal.textContent=cr.toFixed(2)+"%";
+
+  // Fail box: red if >0, black if 0
+  failVal.className = fail>0 ? "fail-red" : "fail-black";
+
+  // Pass box: green if 1 or more, white if 0
+  if(pass>=1) passBox.style.background="#2ecc71";
+  else passBox.style.background="#ffffff";
+  passVal.className = pass>=1 ? "pass-green" : "";
+
+  // Compliance Rate KPI color logic
+  if(cr === 100) crBox.style.background="#145a32";      // Dark Green
+  else if(cr >= 95 && cr < 100) crBox.style.background="#f1948a"; // Light Red
+  else crBox.style.background="#e74c3c"; // Dark Red
+
+  renderTable(data);
+  renderCityChart(data);
+}
+
+/* ===== TABLE ===== */
+function renderTable(data){
+  const map={};
+  data.forEach(d=>{
+    if(!map[d.partner_id]) map[d.partner_id]={name:d.partner_name, fail:0, pass:0, total:0, cr:0, cnt:0};
+    const p=map[d.partner_id];
+    p.fail+=num(d.Fail);
+    p.pass+=num(d.Pass);
+    p.total+=num(d.Total);
+    p.cr+=pct(d["Facial Recognition Pass Couriers Prop."]);
+    p.cnt++;
+  });
+
+  const rows = Object.values(map).map(p=>{ 
+    const avg=(p.cr/p.cnt).toFixed(2); 
+    return {...p, avg}; 
+  });
+  rows.sort((a,b)=>b.avg - a.avg);
+
+  summaryTable.innerHTML="";
+  rows.forEach((r,i)=>{
+    let rankMedal = i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1;
+
+    // Avg % color logic
+    let avgClass="";
+    if(r.avg == 100) avgClass="avg-darkgreen";        // Dark Green
+    else if(r.avg >=95 && r.avg < 100) avgClass="avg-lightred"; // Light Red
+    else avgClass="avg-red";                          // Dark Red
+
+    const failClass = r.fail>0?"fail-red":"fail-black";
+    const passClass = r.pass>0?"pass-green":"";
+
+    summaryTable.innerHTML+=`<tr>
+      <td>${rankMedal}</td>
+      <td>${r.name}</td>
+      <td class="${failClass}">${r.fail}</td>
+      <td class="${passClass}">${r.pass}</td>
+      <td>${r.total}</td>
+      <td class="${avgClass}">${r.avg}%</td>
+    </tr>`;
+  });
+}
+
+/* ===== CITY CHART ===== */
+function renderCityChart(data){
+  const cityMap={};
+  data.forEach(d=>{ if(!cityMap[d.city]) cityMap[d.city]={sum:0,cnt:0}; cityMap[d.city].sum+=pct(d["Facial Recognition Pass Couriers Prop."]); cityMap[d.city].cnt++; });
+  const cities=Object.keys(cityMap);
+  const rates=cities.map(c=>cityMap[c].sum/cityMap[c].cnt);
+  const colors = rates.map(r=>r>=80?"#2ecc71":r>=40?"#f1c40f":"#e74c3c");
+
+  Plotly.newPlot("cityChart",[{
+    x:cities, y:rates, type:"bar", text:rates.map(r=>r.toFixed(2)+"%"), textposition:"outside", marker:{color:colors}
+  }],{
+    yaxis:{range:[0,100],title:{text:"Compliance %", font:{size:16, family:"Arial Black", color:"black"}}},
+    title:{text:"City-wise Average Compliance Rate", font:{size:20, family:"Arial Black", color:"black"}}
+  });
+}
+
+/* ===== EXCEL EXPORT ===== */
+function exportTableToExcel(data, filename){
+  const ws=XLSX.utils.json_to_sheet(data);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Data");
+  XLSX.writeFile(wb, filename);
+}
+
+exportOverall.addEventListener("click", ()=>{
+  let data=[];
+  summaryTable.querySelectorAll("tr").forEach(tr=>{
+    const row={};
+    tr.querySelectorAll("td").forEach((td,i)=>{
+      row[summaryTable.parentElement.querySelectorAll("th")[i].innerText]=td.innerText;
+    });
+    data.push(row);
+  });
+  exportTableToExcel(data,"Overall_Data.xlsx");
+});
+
+exportPartner.addEventListener("click", ()=>{
+  const partnerID = partnerSelect.value;
+  if(!partnerID){ alert("Select a partner first!"); return; }
+  let data=[];
+  summaryTable.querySelectorAll("tr").forEach(tr=>{
+    const name = tr.querySelectorAll("td")[1].innerText;
+    if(name === partnerSelect.options[partnerSelect.selectedIndex].text){
+      const row={};
+      tr.querySelectorAll("td").forEach((td,i)=>{
+        row[summaryTable.parentElement.querySelectorAll("th")[i].innerText]=td.innerText;
+      });
+      data.push(row);
+    }
+  });
+  if(data.length>0) exportTableToExcel(data,"Partner_Data.xlsx");
+  else alert("No data for selected partner!");
+});
+
+/* ===== PARTNER PERFORMANCE SUMMARY ===== */
+function updatePartnerSummary() {
+  const pid = summaryPartnerSelect.value;
+  if (!pid) { partnerSummary.innerHTML=""; return; }
+
+  let partnerData = rawData.filter(d => d.partner_id == pid);
+  if(citySelect.value) partnerData = partnerData.filter(d => d.city===citySelect.value);
+  if(partnerData.length===0){ partnerSummary.innerHTML="No data for selected partner in this city."; return; }
+
+  let fail=0, pass=0, total=0, crSum=0, cnt=0;
+  partnerData.forEach(d=>{
+    fail+=num(d.Fail);
+    pass+=num(d.Pass);
+    total+=num(d.Total);
+    crSum+=pct(d["Facial Recognition Pass Couriers Prop."]);
+    cnt++;
+  });
+
+  const avgCr = cnt?(crSum/cnt).toFixed(2):0;
+  let assessment = avgCr==100?"Excellent":avgCr>=95?"Good":"Needs Improvement";
+
+  const failClass = fail>0?"fail-red":"fail-black";
+  const passClass = pass>0?"pass-green":"";
+
+  // Compliance Rate color
+  let crColor = avgCr==100?"#145a32":avgCr>=95?"#f1948a":"#e74c3c";
+
+  partnerSummary.innerHTML=`
+    Partner: <b>${partnerData[0].partner_name}</b><br>
+    Total Couriers: <b>${total}</b><br>
+    Fail: <span class="${failClass}">${fail}</span>, Pass: <span class="${passClass}">${pass}</span><br>
+    Compliance Rate: <b style="color:${crColor}">${avgCr}%</b> → ${assessment}
+  `;
+}
+
+summaryPartnerSelect.addEventListener("change", updatePartnerSummary);
+citySelect.addEventListener("change", updatePartnerSummary);
+
+</script>
+
+</body>
+</html>
